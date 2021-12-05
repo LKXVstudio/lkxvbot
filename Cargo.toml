@@ -1,0 +1,16 @@
+[package]
+name = "lkxvbot"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { default-features = false, features = ["macros", "rt", "time"], version = "1" }
+twilight-gateway = "0"
+twilight-http = "0"
+twilight-model = "0"
+twilight-standby = "0"
+anyhow = "1"
+futures-util = "0.3"
+lazy_static = "1"
+tracing = "0.1"
+tracing-subscriber = "0.2"
