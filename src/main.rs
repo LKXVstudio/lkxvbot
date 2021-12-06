@@ -59,13 +59,11 @@ async fn main() -> anyhow::Result<()> {
     let token = env::var("LKXV_TOKEN")?;
     let owner = env::var("LKXV_OWNER")?.parse()?;
     let scheme = ShardScheme::Auto;
-    let (cluster, mut events) = Cluster::builder(
-        token.clone(),
-        Intents::GUILD_MESSAGES | Intents::GUILD_MESSAGE_REACTIONS,
-    )
-    .shard_scheme(scheme)
-    .build()
-    .await?;
+    let (cluster, mut events) =
+        Cluster::builder(token.clone(), Intents::GUILD_MESSAGES | Intents::GUILD_MESSAGE_REACTIONS)
+            .shard_scheme(scheme)
+            .build()
+            .await?;
     let cluster = Arc::new(cluster);
     let cluster_spawn = Arc::clone(&cluster);
     tokio::spawn(async move {
@@ -139,10 +137,9 @@ async fn execute_poll<'a>(
         embed_description.push_str(desc.as_str());
         embed_description.push('\n');
     }
-    let mut votes: HashMap<&str, (&str, u32)> = HashMap::new();
+    let mut votes: HashMap<UserId, usize> = HashMap::new();
     for option in options.iter().zip(reactions) {
         write!(&mut embed_description, "\n\u{2800}{} \u{30fb} {}", option.1, option.0)?;
-        votes.insert(option.1, (option.0, 0));
     }
     write!(&mut embed_description, "\n\nGłosowanie zakończy się <t:{}:R>", end_timestamp)?;
     let poll_embed = Embed {
@@ -162,18 +159,19 @@ async fn execute_poll<'a>(
     };
     let poll_msg = http.create_message(channel_id).embeds(&[poll_embed])?.exec().await?.model().await?;
 
-    for reaction in votes.keys() {
+    for reaction in reactions.iter().take(options.len()) {
         http.create_reaction(poll_msg.channel_id, poll_msg.id, &RequestReactionType::Unicode { name: reaction })
             .exec()
             .await?;
     }
-    let mut reaction_stream = standby.wait_for_reaction_stream(poll_msg.id, move |v: &ReactionAdd| v.user_id != poll_msg.author.id);
+    let mut reaction_stream =
+        standby.wait_for_reaction_stream(poll_msg.id, move |v: &ReactionAdd| v.user_id != poll_msg.author.id);
     let collector = async {
         http.create_message(original_channel).content("Głosowanie zostało utworzone!")?.exec().await?;
         while let Some(reaction) = reaction_stream.next().await {
             if let ReactionType::Unicode { name } = &reaction.emoji {
-                if let Some((option, count)) = votes.get_mut(name.as_str()) {
-                    if selfvote_block && *option == format!("<@!{}>", reaction.user_id) {
+                if let Some(o) = reactions.iter().take(options.len()).position(|&v| v == name) {
+                    if selfvote_block && options[o] == format!("<@!{}>", reaction.user_id) {
                         http.delete_reaction(
                             reaction.channel_id,
                             reaction.message_id,
@@ -185,9 +183,18 @@ async fn execute_poll<'a>(
                         send_dm(http, reaction.user_id, "**Błąd:** Nie możesz głosować na siebie.").await?;
                         continue;
                     }
-                    *count += 1;
-                    send_dm(http, reaction.user_id, format!("Twój głos został ustawiony na '{}'.", option).as_str())
-                        .await?;
+
+                    send_dm(
+                        http,
+                        reaction.user_id,
+                        if let Some(v) = votes.insert(reaction.user_id, o) {
+                            format!("Twój głos został zmieniony z '{}' na '{}'.", options[v], options[o])
+                        } else {
+                            format!("Twój głos został ustawiony na '{}'.", options[o])
+                        }
+                        .as_str(),
+                    )
+                    .await?;
                 }
             }
             http.delete_reaction(
@@ -206,14 +213,24 @@ async fn execute_poll<'a>(
         _ = sleep(Duration::from_secs(duration)) => {}
     };
     http.delete_all_reactions(poll_msg.channel_id, poll_msg.id).exec().await?;
-    let vote_count = votes.values().fold(0_u32, |a, b| a + b.1);
+    let mut vote_count_full = 0;
+    let mut vote_counts = vec![0_usize; options.len()];
     let mut embed_description = String::new();
-    if vote_count > 0 {
-        write!(&mut embed_description, "Ilość głosów: {}\n\n", vote_count)?;
-        let mut sorted_values: Vec<_> = votes.values().collect();
-        sorted_values.sort_by(|a, b| b.1.cmp(&a.1));
-        for entry in sorted_values {
-            writeln!(&mut embed_description, "\u{2800}\u{30fb} {}: {}% ({} gł.)", entry.0, entry.1 * 100 / vote_count, entry.1)?;
+    for vote in votes {
+        vote_count_full += 1;
+        vote_counts[vote.1] += 1;
+    }
+    if vote_count_full > 0 {
+        write!(&mut embed_description, "Ilość głosów: {}\n\n", vote_count_full)?;
+        vote_counts.sort_by(|a, b| b.cmp(a));
+        for vote_count in vote_counts.iter().enumerate() {
+            writeln!(
+                &mut embed_description,
+                "\u{2800}\u{30fb} {}: {}% ({} gł.)",
+                options[vote_count.0],
+                vote_count.1 * 100 / vote_count_full,
+                vote_count.1
+            )?;
         }
     } else {
         embed_description.push_str("Brak głosów.");
