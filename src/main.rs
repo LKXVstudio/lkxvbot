@@ -32,11 +32,11 @@ lazy_static! {
         description: Some(
             concat!(
                 "Dostępne komendy:\n\n",
-                "\u{2800}- Pomoc\n",
+                "\u{2800}\u{25AB} Pomoc\n",
                 "\u{2800}\u{2800}\u{30fb} `lbot help`\n",
-                "\u{2800}- Głosowanie\n",
+                "\u{2800}\u{25AB} Głosowanie\n",
                 "\u{2800}\u{2800}\u{30fb} `lbot wybory <id kanału> <czas> <wzmianki...>`\n",
-                "\u{2800}\u{2800}\u{30fb} `lbot referendum <id kanału> <czas>`\n"
+                "\u{2800}\u{2800}\u{30fb} `lbot referendum <id kanału> <czas>`"
             )
             .to_string()
         ),
@@ -55,7 +55,7 @@ lazy_static! {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt::init();
+    pretty_env_logger::init_custom_env("LKXV_LOG");
     let token = env::var("LKXV_TOKEN")?;
     let owner = env::var("LKXV_OWNER")?.parse()?;
     let scheme = ShardScheme::Auto;
@@ -78,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
         let standby = Arc::clone(&standby);
         tokio::spawn(async move {
             if let Err(e) = handle_event(event, http, standby, owner).await {
-                tracing::error!("Error in the event handler: {}", e);
+                log::error!("Error in the event handler: {}", e);
             }
         });
     }
@@ -212,7 +212,6 @@ async fn execute_poll<'a>(
         r = collector => {r?},
         _ = sleep(Duration::from_secs(duration)) => {}
     };
-    http.delete_all_reactions(poll_msg.channel_id, poll_msg.id).exec().await?;
     let mut vote_count_full = 0;
     let mut vote_counts = vec![0_usize; options.len()];
     let mut embed_description = String::new();
@@ -250,7 +249,8 @@ async fn execute_poll<'a>(
         url: None,
         video: None,
     };
-    http.create_message(channel_id).embeds(&[results_embed])?.exec().await?.model().await?;
+    http.delete_all_reactions(poll_msg.channel_id, poll_msg.id).exec().await?;
+    http.update_message(poll_msg.channel_id, poll_msg.id).embeds(&[results_embed])?.exec().await?.model().await?;
     Ok(())
 }
 
@@ -352,7 +352,7 @@ fn duration_from_shortened(shortened: &str) -> Option<u64> {
     if shortened.len() < 2 {
         return None;
     }
-    let suffix = shortened.chars().last().unwrap();
+    let suffix = shortened.chars().last()?;
     shortened[..shortened.len() - 1].parse::<u64>().ok().and_then(|v| match suffix {
         's' => Some(v),
         'm' => Some(v * 60),

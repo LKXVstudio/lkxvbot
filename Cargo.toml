@@ -12,5 +12,6 @@ twilight-standby = "0"
 anyhow = "1"
 futures-util = "0.3"
 lazy_static = "1"
-tracing = "0.1"
-tracing-subscriber = "0.2"
+tracing = { version = "0", features = ["log", "log-always"] }
+log = "0"
+pretty_env_logger = "0"
