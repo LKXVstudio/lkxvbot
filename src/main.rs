@@ -4,7 +4,7 @@
     clippy::unreadable_literal // it's not unreadable, it's a fucking hex color
 )]
 
-use std::{collections::HashMap, env, sync::Arc, time::Duration};
+use std::{collections::HashMap, env, fmt::Display, sync::Arc, time::Duration};
 
 use futures_util::StreamExt;
 use lazy_static::lazy_static;
@@ -36,7 +36,7 @@ lazy_static! {
                 "\u{2800}\u{2800}\u{30fb} `lbot help`\n",
                 "\u{2800}\u{25AB} Głosowanie\n",
                 "\u{2800}\u{2800}\u{30fb} `lbot wybory <id kanału> <czas> <wzmianki...>`\n",
-                "\u{2800}\u{2800}\u{30fb} `lbot referendum <id kanału> <czas>`"
+                "\u{2800}\u{2800}\u{30fb} `lbot referendum <id kanału> <czas> <typ>`"
             )
             .to_string()
         ),
@@ -86,7 +86,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn execute_poll<'a>(
+async fn execute_poll<'a, T: AsRef<str> + Display + PartialEq<String>>(
     http: &Client,
     standby: Arc<Standby>,
     original_channel: ChannelId,
@@ -94,7 +94,7 @@ async fn execute_poll<'a>(
     channel: &str,
     duration: &str,
     timestamp: Timestamp,
-    options: &[&str],
+    options: &[T],
     reactions: &[&str],
     selfvote_block: bool, // if 'options' contains mentions, this will prevent voting for your own mention
 ) -> anyhow::Result<()> {
@@ -112,31 +112,21 @@ async fn execute_poll<'a>(
         return Ok(());
     };
     http.create_message(original_channel).content("Podaj tytuł głosowania [lub 'anuluj']:")?.exec().await?;
-    let title = standby
-        .wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid)
-        .await?
-        .content
-        .clone();
+    let title =
+        &standby.wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid).await?.content;
     if title == "anuluj" {
         http.create_message(original_channel).content("Anulowano.")?.exec().await?;
         return Ok(());
     }
-    http.create_message(original_channel).content("Podaj opis głosowania [lub 'brak', 'anuluj']:")?.exec().await?;
-    let desc = standby
-        .wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid)
-        .await?
-        .content
-        .clone();
+    http.create_message(original_channel).content("Podaj opis głosowania [lub 'anuluj']:")?.exec().await?;
+    let desc =
+        &standby.wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid).await?.content;
     if desc == "anuluj" {
         http.create_message(original_channel).content("Anulowano.")?.exec().await?;
         return Ok(());
     }
     http.create_message(original_channel).content("Tworzenie głosowania...")?.exec().await?;
-    let mut embed_description = String::new();
-    if desc != "brak" {
-        embed_description.push_str(desc.as_str());
-        embed_description.push('\n');
-    }
+    let mut embed_description = format!("Opis:\n{}\n", desc);
     let mut votes: HashMap<UserId, usize> = HashMap::new();
     for option in options.iter().zip(reactions) {
         write!(&mut embed_description, "\n\u{2800}{} \u{30fb} {}", option.1, option.0)?;
@@ -145,7 +135,7 @@ async fn execute_poll<'a>(
     let poll_embed = Embed {
         author: None,
         color: Some(0x78deb8),
-        title: Some(title),
+        title: Some(title.clone()),
         description: Some(embed_description),
         fields: vec![],
         kind: "rich".to_string(),
@@ -169,21 +159,20 @@ async fn execute_poll<'a>(
     let collector = async {
         http.create_message(original_channel).content("Głosowanie zostało utworzone!")?.exec().await?;
         while let Some(reaction) = reaction_stream.next().await {
+            http.delete_reaction(
+                reaction.channel_id,
+                reaction.message_id,
+                &rtype_to_reqrtype(&reaction.emoji),
+                reaction.user_id,
+            )
+            .exec()
+            .await?;
             if let ReactionType::Unicode { name } = &reaction.emoji {
                 if let Some(o) = reactions.iter().take(options.len()).position(|&v| v == name) {
                     if selfvote_block && options[o] == format!("<@!{}>", reaction.user_id) {
-                        http.delete_reaction(
-                            reaction.channel_id,
-                            reaction.message_id,
-                            &rtype_to_reqrtype(&reaction.emoji),
-                            reaction.user_id,
-                        )
-                        .exec()
-                        .await?;
                         send_dm(http, reaction.user_id, "**Błąd:** Nie możesz głosować na siebie.").await?;
                         continue;
                     }
-
                     send_dm(
                         http,
                         reaction.user_id,
@@ -197,14 +186,6 @@ async fn execute_poll<'a>(
                     .await?;
                 }
             }
-            http.delete_reaction(
-                reaction.channel_id,
-                reaction.message_id,
-                &rtype_to_reqrtype(&reaction.emoji),
-                reaction.user_id,
-            )
-            .exec()
-            .await?;
         }
         anyhow::Ok(())
     };
@@ -214,7 +195,7 @@ async fn execute_poll<'a>(
     };
     let mut vote_count_full = 0;
     let mut vote_counts = vec![0_usize; options.len()];
-    let mut embed_description = String::new();
+    let mut embed_description = format!("Opis:\n{}\n\n", desc);
     for vote in votes {
         vote_count_full += 1;
         vote_counts[vote.1] += 1;
@@ -237,7 +218,7 @@ async fn execute_poll<'a>(
     let results_embed = Embed {
         author: None,
         color: Some(0x78deb8),
-        title: Some("Głosowanie zakończone!".to_string()),
+        title: Some(title.clone()),
         description: Some(embed_description),
         fields: vec![],
         kind: "rich".to_string(),
@@ -250,7 +231,8 @@ async fn execute_poll<'a>(
         video: None,
     };
     http.delete_all_reactions(poll_msg.channel_id, poll_msg.id).exec().await?;
-    http.update_message(poll_msg.channel_id, poll_msg.id).embeds(&[results_embed])?.exec().await?.model().await?;
+    http.update_message(poll_msg.channel_id, poll_msg.id).embeds(&[results_embed])?.exec().await?;
+    http.create_message(poll_msg.channel_id).content("Głosowanie zostało zakończone!")?.reply(poll_msg.id).exec().await?;
     Ok(())
 }
 
@@ -274,11 +256,14 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
         return Ok(());
     }
     let split: Vec<&str> = msg.content.split_whitespace().skip(1).collect();
-    match split.get(0) {
-        Some(&"help") => {
+    if split.is_empty() {
+        return Ok(());
+    }
+    match split[0] {
+        "help" => {
             http.create_message(msg.channel_id).embeds(&*HELP_EMBED)?.exec().await?;
         }
-        Some(&"wybory") if split.len() > 2 => {
+        "wybory" if split.len() > 2 => {
             if msg.author.id.get() != owner {
                 http.create_message(msg.channel_id).content("**Błąd:** Niewystarczające uprawnienia.")?.exec().await?;
                 return Ok(());
@@ -309,24 +294,68 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
             )
             .await?;
         }
-        Some(&"referendum") if split.len() == 3 => {
-            if msg.author.id.get() != owner {
+        "referendum" if split.len() == 4 => {
+            let authorid = msg.author.id;
+            if authorid.get() != owner {
                 http.create_message(msg.channel_id).content("**Błąd:** Niewystarczające uprawnienia.")?.exec().await?;
                 return Ok(());
             }
-            execute_poll(
-                http,
-                standby,
-                msg.channel_id,
-                msg.author.id,
-                split[1],
-                split[2],
-                msg.timestamp,
-                &["Za", "Przeciw"],
-                YESNO_EMOJIS,
-                false,
-            )
-            .await?;
+            match split[3] {
+                "tn" => {
+                    execute_poll(
+                        http,
+                        standby,
+                        msg.channel_id,
+                        msg.author.id,
+                        split[1],
+                        split[2],
+                        msg.timestamp,
+                        &["Za", "Przeciw"],
+                        YESNO_EMOJIS,
+                        false,
+                    )
+                    .await?;
+                }
+                "ankieta" => {
+                    let mut options: Vec<String> = Vec::with_capacity(8);
+                    let mut option_stream = standby
+                        .wait_for_message_stream(msg.channel_id, move |v: &MessageCreate| v.author.id == authorid)
+                        .take(8);
+                    http.create_message(msg.channel_id)
+                        .content("Podaj 8 opcji (lub mniej z pomocą 'koniec')")?
+                        .exec()
+                        .await?;
+                    while let Some(opt) = option_stream.next().await {
+                        if opt.content == "koniec" {
+                            break;
+                        }
+                        options.push(opt.content.clone());
+                    }
+                    if options.is_empty() {
+                        http.create_message(msg.channel_id).content("**Błąd:** Nie podano żadnych opcji.")?.exec().await?;
+                        return Ok(());
+                    }
+                    execute_poll(
+                        http,
+                        standby,
+                        msg.channel_id,
+                        msg.author.id,
+                        split[1],
+                        split[2],
+                        msg.timestamp,
+                        &options,
+                        CIRCLE_EMOJIS,
+                        false,
+                    )
+                    .await?;
+                }
+                _ => {
+                    http.create_message(msg.channel_id)
+                        .content("**Błąd:** Nieprawidłowy typ referendum (użyj 'tn' lub 'ankieta').")?
+                        .exec()
+                        .await?;
+                }
+            }
         }
         _ => {
             http.create_message(msg.channel_id)
