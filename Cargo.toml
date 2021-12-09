@@ -10,7 +10,7 @@ twilight-http = "0"
 twilight-model = "0"
 twilight-standby = "0"
 anyhow = "1"
-futures-util = "0.3"
+futures-util = "0"
 lazy_static = "1"
 tracing = { version = "0", features = ["log", "log-always"] }
 log = "0"
