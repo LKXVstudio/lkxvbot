@@ -24,8 +24,7 @@ use twilight_model::{
 };
 use twilight_standby::Standby;
 
-const CIRCLE_EMOJIS: &[&str] =
-    &["\u{1f535}", "\u{1f7e1}", "\u{1f7e2}", "\u{1f534}", "\u{26aa}", "\u{1f7e0}", "\u{1f7e4}", "\u{1f7e3}"];
+const CIRCLE_EMOJIS: &[&str] = &["\u{1f535}", "\u{1f7e1}", "\u{1f7e2}", "\u{1f534}", "\u{26aa}", "\u{1f7e0}", "\u{1f7e4}", "\u{1f7e3}"];
 const YESNO_EMOJIS: &[&str] = &["\u{1f975}", "\u{1f976}"];
 const CANCEL_EMOJI: &str = "\u{274c}";
 
@@ -64,10 +63,7 @@ async fn main() -> anyhow::Result<()> {
     let owner = env::var("LKXV_OWNER")?.parse()?;
     let scheme = ShardScheme::Auto;
     let (cluster, mut events) =
-        Cluster::builder(token.clone(), Intents::GUILD_MESSAGES | Intents::GUILD_MESSAGE_REACTIONS)
-            .shard_scheme(scheme)
-            .build()
-            .await?;
+        Cluster::builder(token.clone(), Intents::GUILD_MESSAGES | Intents::GUILD_MESSAGE_REACTIONS).shard_scheme(scheme).build().await?;
     let cluster = Arc::new(cluster);
     let cluster_spawn = Arc::clone(&cluster);
     tokio::spawn(async move {
@@ -82,7 +78,7 @@ async fn main() -> anyhow::Result<()> {
         let standby = Arc::clone(&standby);
         tokio::spawn(async move {
             if let Err(e) = handle_event(event, http, standby, owner).await {
-                log::error!("Error in the event handler: {}", e);
+                log::error!("Error in the event handler: {:?}", e);
             }
         });
     }
@@ -116,15 +112,13 @@ async fn execute_poll<'a, T: AsRef<str> + Display + PartialEq<String>>(
         return Ok(());
     };
     http.create_message(original_channel).content("Podaj tytuł głosowania [lub 'anuluj']:")?.exec().await?;
-    let title =
-        &standby.wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid).await?.content;
+    let title = &standby.wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid).await?.content;
     if title == "anuluj" {
         http.create_message(original_channel).content("Anulowano.")?.exec().await?;
         return Ok(());
     }
     http.create_message(original_channel).content("Podaj opis głosowania [lub 'anuluj']:")?.exec().await?;
-    let desc =
-        &standby.wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid).await?.content;
+    let desc = &standby.wait_for_message(original_channel, move |v: &MessageCreate| v.author.id == authorid).await?.content;
     if desc == "anuluj" {
         http.create_message(original_channel).content("Anulowano.")?.exec().await?;
         return Ok(());
@@ -151,27 +145,20 @@ async fn execute_poll<'a, T: AsRef<str> + Display + PartialEq<String>>(
         url: None,
         video: None,
     };
+    log::debug!("Sending embed: {:?}", poll_embed);
     let poll_msg = http.create_message(channel_id).embeds(&[poll_embed])?.exec().await?.model().await?;
 
     for reaction in reactions.iter().take(options.len()).chain(&[CANCEL_EMOJI]) {
-        http.create_reaction(poll_msg.channel_id, poll_msg.id, &RequestReactionType::Unicode { name: reaction })
-            .exec()
-            .await?;
+        http.create_reaction(poll_msg.channel_id, poll_msg.id, &RequestReactionType::Unicode { name: reaction }).exec().await?;
     }
-    let mut reaction_stream =
-        standby.wait_for_reaction_stream(poll_msg.id, move |v: &ReactionAdd| v.user_id != poll_msg.author.id);
+    let mut reaction_stream = standby.wait_for_reaction_stream(poll_msg.id, move |v: &ReactionAdd| v.user_id != poll_msg.author.id);
     let collector = async {
         http.create_message(original_channel).content("Głosowanie zostało utworzone!")?.exec().await?;
         log::info!("Poll '{}' has been created, listening for reactions", title);
         while let Some(reaction) = reaction_stream.next().await {
-            http.delete_reaction(
-                reaction.channel_id,
-                reaction.message_id,
-                &rtype_to_reqrtype(&reaction.emoji),
-                reaction.user_id,
-            )
-            .exec()
-            .await?;
+            http.delete_reaction(reaction.channel_id, reaction.message_id, &rtype_to_reqrtype(&reaction.emoji), reaction.user_id)
+                .exec()
+                .await?;
             if let ReactionType::Unicode { name } = &reaction.emoji {
                 if let Some(o) = reactions.iter().take(options.len()).position(|&v| v == name) {
                     if selfvote_block && options[o] == format!("<@!{}>", reaction.user_id) {
@@ -193,7 +180,7 @@ async fn execute_poll<'a, T: AsRef<str> + Display + PartialEq<String>>(
                     .await;
                 } else if name == CANCEL_EMOJI {
                     if reaction.user_id == authorid {
-                        return Ok(())
+                        return Ok(());
                     } else {
                         let _ = send_dm(http, reaction.user_id, "**Błąd:** Niewystarczające uprawnienia.").await;
                     }
@@ -207,7 +194,7 @@ async fn execute_poll<'a, T: AsRef<str> + Display + PartialEq<String>>(
         _ = sleep(Duration::from_secs(duration)) => {}
     };
     let mut vote_count_full = 0;
-    let mut vote_counts = vec![0_usize; options.len()];
+    let mut vote_counts = vec![0_usize; options.len()]; // index is option number, value is vote count
     let mut embed_description = format!("Opis:\n{}\n\n", desc);
     for vote in votes {
         vote_count_full += 1;
@@ -242,21 +229,17 @@ async fn execute_poll<'a, T: AsRef<str> + Display + PartialEq<String>>(
         url: None,
         video: None,
     };
+    sleep(Duration::from_secs(5)).await;
     http.delete_all_reactions(poll_msg.channel_id, poll_msg.id).exec().await?;
+    log::debug!("Sending embed: {:?}", results_embed);
     http.update_message(poll_msg.channel_id, poll_msg.id).embeds(&[results_embed])?.exec().await?;
-    http.create_message(poll_msg.channel_id)
-        .content("Głosowanie zostało zakończone!")?
-        .reply(poll_msg.id)
-        .exec()
-        .await?;
+    http.create_message(poll_msg.channel_id).content("Głosowanie zostało zakończone!")?.reply(poll_msg.id).exec().await?;
     Ok(())
 }
 
 fn rtype_to_reqrtype(input: &ReactionType) -> RequestReactionType {
     match input {
-        ReactionType::Custom { animated: _, id, name } => {
-            RequestReactionType::Custom { id: *id, name: name.as_ref().map(String::as_str) }
-        }
+        ReactionType::Custom { animated: _, id, name } => RequestReactionType::Custom { id: *id, name: name.as_ref().map(String::as_str) },
         ReactionType::Unicode { name } => RequestReactionType::Unicode { name: name.as_str() },
     }
 }
@@ -296,19 +279,8 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
                     .await?;
                 return Ok(());
             }
-            execute_poll(
-                http,
-                standby,
-                msg.channel_id,
-                msg.author.id,
-                split[1],
-                split[2],
-                msg.timestamp,
-                &split[3..],
-                CIRCLE_EMOJIS,
-                true,
-            )
-            .await?;
+            execute_poll(http, standby, msg.channel_id, msg.author.id, split[1], split[2], msg.timestamp, &split[3..], CIRCLE_EMOJIS, true)
+                .await?;
         }
         "referendum" if split.len() == 4 => {
             let authorid = msg.author.id;
@@ -334,13 +306,9 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
                 }
                 "ankieta" => {
                     let mut options: Vec<String> = Vec::with_capacity(8);
-                    let mut option_stream = standby
-                        .wait_for_message_stream(msg.channel_id, move |v: &MessageCreate| v.author.id == authorid)
-                        .take(8);
-                    http.create_message(msg.channel_id)
-                        .content("Podaj 8 opcji (lub mniej z pomocą 'koniec')")?
-                        .exec()
-                        .await?;
+                    let mut option_stream =
+                        standby.wait_for_message_stream(msg.channel_id, move |v: &MessageCreate| v.author.id == authorid).take(8);
+                    http.create_message(msg.channel_id).content("Podaj 8 opcji (lub mniej z pomocą 'koniec')")?.exec().await?;
                     while let Some(opt) = option_stream.next().await {
                         if opt.content == "koniec" {
                             break;
@@ -348,10 +316,7 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
                         options.push(opt.content.clone());
                     }
                     if options.is_empty() {
-                        http.create_message(msg.channel_id)
-                            .content("**Błąd:** Nie podano żadnych opcji.")?
-                            .exec()
-                            .await?;
+                        http.create_message(msg.channel_id).content("**Błąd:** Nie podano żadnych opcji.")?.exec().await?;
                         return Ok(());
                     }
                     execute_poll(
@@ -377,10 +342,7 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
             }
         }
         _ => {
-            http.create_message(msg.channel_id)
-                .content("**Błąd:** Nieznana komenda lub niepoprawne użycie.")?
-                .exec()
-                .await?;
+            http.create_message(msg.channel_id).content("**Błąd:** Nieznana komenda lub niepoprawne użycie.")?.exec().await?;
         }
     }
     Ok(())
@@ -389,7 +351,7 @@ async fn handle_message(msg: &MessageCreate, http: &Client, standby: Arc<Standby
 async fn handle_event(event: Event, http: Arc<Client>, standby: Arc<Standby>, owner: u64) -> anyhow::Result<()> {
     if let Event::MessageCreate(msg) = event {
         if let Err(e) = handle_message(&msg, &http, standby, owner).await {
-            http.create_message(msg.channel_id).content(format!("**Wyjątek:** {}", e).as_str())?.exec().await?;
+            http.create_message(msg.channel_id).content(format!("**Wyjątek:** {:?}", e).as_str())?.exec().await?;
             return Err(e);
         }
     }
